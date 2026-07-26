@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>S&P 500 섹터 및 산업군별 시가총액 가중평균 등락률</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+        background-color: #f4f4f4;
+      }
+      .container {
+        max-width: 900px;
+        margin: auto;
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        text-align: center;
+        color: #333;
+        margin-bottom: 8px;
+      }
+      #timestamp {
+        text-align: right;
+        font-size: 0.9em;
+        color: #777;
+        margin-bottom: 20px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+        font-size: 0.9em;
+      }
+      th, td {
+        padding: 10px 14px;
+        text-align: left;
+      }
+      th {
+        background-color: #333;
+        color: white;
+        font-size: 0.95em;
+      }
+      
+      /* 계층별 스타일 및 구분선 지정 */
+      tr.sector-row {
+        background-color: #e9ecef;
+        font-weight: bold;
+        font-size: 1.05em;
+        border-top: 2px solid #6c757d;
+        border-bottom: 3px double #333; /* Sector: 이중실선 */
+      }
+      tr.industry-row {
+        background-color: #f8f9fa;
+        font-weight: bold;
+        border-bottom: 1px solid #adb5bd; /* Industry: 단일실선 */
+      }
+      tr.stock-row {
+        background-color: #ffffff;
+        border-bottom: 1px solid #f1f3f5;
+      }
+      tr.stock-row:hover {
+        background-color: #f1f5f9;
+      }
+      
+      .text-right { text-align: right; }
+      .indent-1 { padding-left: 28px !important; }
+      .indent-2 { padding-left: 50px !important; }
+
+      /* 등락률 색상 지정 (양수: 빨강, 음수: 파랑) */
+      .up { color: #d9534f; font-weight: bold; }
+      .down { color: #0275d8; font-weight: bold; }
+      .flat { color: #6c757d; }
+
+      .loading { text-align: center; color: #888; padding: 30px; }
+      .error { color: red; text-align: center; padding: 20px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>S&P 500 Sector & Industry 가중평균 등락률</h1>
+      <div id="timestamp"></div>
+      <div id="output">
+        <div class="loading">S&P 500 섹터 데이터를 연동 및 계산 중입니다...</div>
+      </div>
+    </div>
+
+    <script>
+      const accessParams = {
+        grant_type: "client_credentials",
+        appkey: "RTORj4tmg0B0jvxdkHQB9zmARpAoYKoFTmKimC-yMVM",
+        secretkey: "D4N_ajJSc8KQhRlyIhoMFCfcW1p7iDGYtHU94R3zoRI",
+      };
+
+      const capitalParams = {
+        stex_tp: "0",
+        inds_cd: "000",
+        stk_tp: "1",
+        trde_qty_tp: "0",
+        stk_cnd: "0",
+        pric_cnd: "0",
+        trde_prica_cnd: "0",
+      };
+
+      let cachedToken = null;
+      function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+      function updateTimestamp(text) {
+        const elem = document.getElementById("timestamp");
+        if (text) {
+          elem.innerText = text;
+        } else {
+          const now = new Date();
+          elem.innerText = `최종 업데이트: ${now.toLocaleTimeString()}`;
+        }
+      }
+
+      // 1. 키움 토큰 발급
+      async function fetchToken() {
+        if (cachedToken) return cachedToken;
+        const url = "https://mockapi.kiwoom.com/oauth2/token";
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json;charset=UTF-8" },
+          body: JSON.stringify(accessParams),
+        });
+        if (!res.ok) throw new Error(`토큰 발급 실패: ${res.status}`);
+        const data = await res.json();
+        cachedToken = data.token || data.access_token;
+        return cachedToken;
+      }
+
+      // 2. 키움 미국 주식 시가총액 연속 조회 (최대 10회)
+      async function fetchCapitalUSA(token) {
+        const url = "https://mockapi.kiwoom.com/api/us/rkinfo";
+        let allResults = [];
+        let contYn = "N";
+        let nextKey = "";
+        let pageCount = 1;
+        const maxPages = 10;
+
+        while (pageCount <= maxPages) {
+          updateTimestamp(`키움 API 조회 중... (${pageCount} / ${maxPages} 페이지)`);
+
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json;charset=UTF-8",
+              authorization: `Bearer ${token}`,
+              "api-id": "usa20550",
+              "cont-yn": contYn,
+              "next-key": nextKey,
+            },
+            body: JSON.stringify(capitalParams),
+          });
+
+          if (!res.ok) throw new Error(`미국 주식 데이터 조회 실패: ${res.status}`);
+
+          const resContYn = res.headers.get("cont-yn") || res.headers.get("Cont-Yn");
+          const resNextKey = res.headers.get("next-key") || res.headers.get("Next-Key");
+          const data = await res.json();
+
+          const items = (data.result_list || []).map((item) => ({
+            stk_cd: item.stk_cd,
+            stk_nm: item.stk_nm,
+            cur_prc: Math.abs(parseFloat(item.cur_prc)),
+            flu_rt: parseFloat(item.flu_rt),
+            mac: parseInt(item.mac), // 시가총액
+          }));
+
+          allResults = allResults.concat(items);
+
+          if (resContYn === "Y" && resNextKey && pageCount < maxPages) {
+            contYn = "Y";
+            nextKey = resNextKey;
+            pageCount++;
+            await delay(1200);
+          } else {
+            break;
+          }
+        }
+        return allResults;
+      }
+
+      // 3. GitHub에서 미국 주식 섹터 JSON 가져오기
+      async function fetchAmericaSectorJSON() {
+        const url = "https://jungjc1117.github.io/americaSector/%EB%AF%B8%EC%9E%A5.json";
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`미장 JSON 불러오기 실패: ${res.status}`);
+        return await res.json();
+      }
+
+      // 등락률에 따른 CSS 클래스 반환
+      function getRateClass(rate) {
+        if (rate > 0) return "up";
+        if (rate < 0) return "down";
+        return "flat";
+      }
+
+      // 4. 데이터 종합 연산 및 계층형 테이블 포맷팅
+      async function processAndRender() {
+        try {
+          updateTimestamp("데이터를 불러오는 중입니다...");
+          const token = await fetchToken();
+          await delay(800);
+
+          // API 데이터와 외부 JSON 병렬 수신
+          const [apiStocks, sectorList] = await Promise.all([
+            fetchCapitalUSA(token),
+            fetchAmericaSectorJSON()
+          ]);
+
+          // 빠른 조회를 위한 API 데이터 Map 생성
+          const apiStockMap = new Map();
+          apiStocks.forEach(item => apiStockMap.set(item.stk_cd, item));
+
+          // "S&P 500" == "O" 데이터만 필터링
+          const sp500Targets = sectorList.filter(item => item["S&P 500"] === "O");
+
+          // 계층적 구조 데이터 생성 (Sector -> Industry -> Stocks)
+          const hierarchy = {};
+
+          sp500Targets.forEach(target => {
+            const ticker = target["종목코드"];
+            const apiData = apiStockMap.get(ticker);
+
+            // API 상에 실시간 가격/시총 데이터가 매칭되는 경우만 집계
+            if (apiData && apiData.mac > 0) {
+              const sector = target.Sector || "Unassigned Sector";
+              const industry = target.Industry || "Unassigned Industry";
+
+              if (!hierarchy[sector]) hierarchy[sector] = {};
+              if (!hierarchy[sector][industry]) hierarchy[sector][industry] = [];
+
+              hierarchy[sector][industry].push({
+                ticker: ticker,
+                name: target["종목명"] || apiData.stk_nm,
+                flu_rt: apiData.flu_rt,
+                mac: apiData.mac
+              });
+            }
+          });
+
+          // HTML 테이블 생성
+          let html = `
+            <table>
+              <thead>
+                <tr>
+                  <th>구분 (Sector / Industry / Ticker)</th>
+                  <th class="text-right">등락률 (%)</th>
+                </tr>
+              </thead>
+              <tbody>
+          `;
+
+          // Sector 순회
+          Object.keys(hierarchy).sort().forEach(sectorName => {
+            const industries = hierarchy[sectorName];
+            
+            let sectorTotalMac = 0;
+            let sectorWeightedSum = 0;
+
+            // Sector 하위 가중평균 계산용 1차 수집
+            Object.values(industries).forEach(stockList => {
+              stockList.forEach(stk => {
+                sectorTotalMac += stk.mac;
+                sectorWeightedSum += (stk.flu_rt * stk.mac);
+              });
+            });
+
+            const sectorAvgRate = sectorTotalMac > 0 ? (sectorWeightedSum / sectorTotalMac) : 0;
+            const sectorRateClass = getRateClass(sectorAvgRate);
+
+            // Sector 행 출력 (이중실선 스타일 지정)
+            html += `
+              <tr class="sector-row">
+                <td>📁 ${sectorName}</td>
+                <td class="text-right ${sectorRateClass}">${sectorAvgRate.toFixed(2)}%</td>
+              </tr>
+            `;
+
+            // Industry 순회
+            Object.keys(industries).sort().forEach(industryName => {
+              const stockList = industries[industryName];
+
+              let indTotalMac = 0;
+              let indWeightedSum = 0;
+
+              stockList.forEach(stk => {
+                indTotalMac += stk.mac;
+                indWeightedSum += (stk.flu_rt * stk.mac);
+              });
+
+              const indAvgRate = indTotalMac > 0 ? (indWeightedSum / indTotalMac) : 0;
+              const indRateClass = getRateClass(indAvgRate);
+
+              // Industry 행 출력 (단일실선 스타일 지정)
+              html += `
+                <tr class="industry-row">
+                  <td class="indent-1">📂 ${industryName}</td>
+                  <td class="text-right ${indRateClass}">${indAvgRate.toFixed(2)}%</td>
+                </tr>
+              `;
+
+              // 종목 순회 (등락률 내림차순 정렬)
+              stockList.sort((a, b) => b.flu_rt - a.flu_rt).forEach(stk => {
+                const stockRateClass = getRateClass(stk.flu_rt);
+                html += `
+                  <tr class="stock-row">
+                    <td class="indent-2">📄 <strong>${stk.ticker}</strong> (${stk.name})</td>
+                    <td class="text-right ${stockRateClass}">${stk.flu_rt.toFixed(2)}%</td>
+                  </tr>
+                `;
+              });
+            });
+          });
+
+          html += `
+              </tbody>
+            </table>
+          `;
+
+          document.getElementById("output").innerHTML = html;
+          updateTimestamp();
+
+        } catch (e) {
+          console.error(e);
+          document.getElementById("output").innerHTML = `
+            <div class="error">데이터 로딩 중 에러가 발생했습니다: ${e.message}</div>
+          `;
+        }
+      }
+
+      // 데이터 가공 시작
+      processAndRender();
+    </script>
+  </body>
+</html>
