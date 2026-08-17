@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Kiwoom 거래대금 순위 연속 조회 (최대 5회)</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+        background-color: #f4f4f4;
+      }
+      .container {
+        max-width: 900px;
+        margin: auto;
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        text-align: center;
+        color: #333;
+      }
+      #timestamp {
+        text-align: right;
+        font-size: 0.9em;
+        color: #777;
+        margin-bottom: 20px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+        font-size: 0.9em;
+      }
+      th,
+      td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+      }
+      th {
+        background-color: #f2f2f2;
+        color: #555;
+      }
+      tr:hover {
+        background-color: #f9f9f9;
+      }
+      .loading {
+        text-align: center;
+        color: #888;
+      }
+      .error {
+        color: red;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>키움증권 거래대금 순위 (최대 10회 연속 조회)</h1>
+      <div id="timestamp"></div>
+      <div id="output"></div>
+    </div>
+
+    <script>
+      const accessParams = {
+        grant_type: "client_credentials",
+        appkey: "RTORj4tmg0B0jvxdkHQB9zmARpAoYKoFTmKimC-yMVM",
+        secretkey: "D4N_ajJSc8KQhRlyIhoMFCfcW1p7iDGYtHU94R3zoRI",
+      };
+
+      const capitalParams = {
+        stex_tp: "0",
+        inds_cd: "000",
+        stk_tp: "1",
+        trde_qty_tp: "0",
+        stk_cnd: "0",
+        pric_cnd: "0",
+        trde_prica_cnd: "0",
+      };
+
+      let cachedToken = null;
+
+      function delay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function fetchToken() {
+        if (cachedToken) return cachedToken;
+        const url = "https://mockapi.kiwoom.com/oauth2/token";
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json;charset=UTF-8" },
+          body: JSON.stringify(accessParams),
+        });
+
+        if (res.status === 429) {
+          throw new Error(
+            "요청이 너무 잦습니다 (429). 잠시 후 다시 시도해 주세요.",
+          );
+        }
+        if (!res.ok) {
+          throw new Error(`토큰 발급 실패: ${res.status}`);
+        }
+        const data = await res.json();
+        cachedToken = data.token || data.access_token;
+        return cachedToken;
+      }
+
+      // 연속 조회를 최대 5회로 제한한 미국 시가총액 API 함수
+      async function fetchCapitalUSA(token, params) {
+        const url = "https://mockapi.kiwoom.com/api/us/rkinfo";
+        let allResults = [];
+        let contYn = "N";
+        let nextKey = "";
+        let pageCount = 1;
+        const maxPages = 5; // 최대 연속 조회 횟수 제한
+
+        while (pageCount <= maxPages) {
+          updateTimestamp(
+            `데이터 요청 중... (${pageCount} / ${maxPages} 페이지)`,
+          );
+
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json;charset=UTF-8",
+              authorization: `Bearer ${token}`,
+              "api-id": "usa20540", // TR 코드
+              "cont-yn": contYn, // 첫 번째는 N, 연속 조회 시 Y
+              "next-key": nextKey, // 이전 응답 Header의 next-key
+            },
+            body: JSON.stringify(params),
+          });
+
+          if (res.status === 429) {
+            throw new Error(
+              "요청이 너무 잦습니다 (429). 1~2분 후 다시 시도해 주세요.",
+            );
+          }
+          if (!res.ok) {
+            throw new Error(`미국 시가총액 조회 실패: ${res.status}`);
+          }
+
+          // 응답 Header에서 연속 조회 여부와 Key 추출
+          const resContYn =
+            res.headers.get("cont-yn") || res.headers.get("Cont-Yn");
+          const resNextKey =
+            res.headers.get("next-key") || res.headers.get("Next-Key");
+
+          const data = await res.json();
+          const items = (data.result_list || []).map((item) => ({
+            stk_cd: item.stk_cd,
+            stk_nm: item.stk_nm,
+            cur_prc: Math.abs(parseFloat(item.cur_prc)),
+            flu_rt: parseFloat(item.flu_rt),
+            mac: parseInt(item.mac),
+          }));
+
+          allResults = allResults.concat(items);
+
+          // 다음 데이터가 있고, 아직 5번째 조회가 아니라면 다음 회차 준비
+          if (resContYn === "Y" && resNextKey && pageCount < maxPages) {
+            contYn = "Y";
+            nextKey = resNextKey;
+            pageCount++;
+            await delay(1200); // API Rate Limit(429) 방지용 대기
+          } else {
+            // 더 이상 데이터가 없거나 10번째 조회가 끝나면 중단
+            break;
+          }
+        }
+
+        return allResults;
+      }
+
+      function renderTable(dataList) {
+        if (!dataList || dataList.length === 0) {
+          document.getElementById("output").innerHTML =
+            `<div class="loading">조회된 데이터가 없습니다.</div>`;
+          return;
+        }
+
+        const table = document.createElement("table");
+        table.innerHTML = `
+          <thead>
+            <tr>
+              <th>종목코드</th>
+              <th>종목명</th>
+              <th>현재가 ($)</th>
+              <th>등락률 (%)</th>
+              <th>시가총액 (천 USD)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dataList
+              .map(
+                (item) => `
+              <tr>
+                <td>${item.stk_cd}</td>
+                <td>${item.stk_nm}</td>
+                <td>${item.cur_prc.toLocaleString()}</td>
+                <td>${item.flu_rt.toFixed(2)}%</td>
+                <td>${item.mac.toLocaleString()}</td>
+              </tr>
+            `,
+              )
+              .join("")}
+          </tbody>
+        `;
+        document.getElementById("output").innerHTML = "";
+        document.getElementById("output").appendChild(table);
+      }
+
+      function updateTimestamp(statusText) {
+        const tsElem = document.getElementById("timestamp");
+        if (statusText) {
+          tsElem.innerText = statusText;
+        } else {
+          const now = new Date();
+          tsElem.innerText = `최종 업데이트: ${now.toLocaleTimeString()}`;
+        }
+      }
+
+      async function updateData() {
+        try {
+          updateTimestamp("데이터를 불러오는 중입니다...");
+          document.getElementById("output").innerHTML =
+            `<div class="loading">API 요청 중...</div>`;
+
+          // 1. 토큰 발급
+          const token = await fetchToken();
+          await delay(1000);
+
+          // 2. 최대 5회 연속 데이터 요청
+          const capitalUSAData = await fetchCapitalUSA(token, capitalParams);
+
+          // 3. 데이터 가공 및 Map 중복 제거
+          const mergedDataMap = new Map();
+          capitalUSAData.forEach((item) => {
+            if (!mergedDataMap.has(item.stk_cd)) {
+              mergedDataMap.set(item.stk_cd, {
+                stk_cd: item.stk_cd,
+                stk_nm: item.stk_nm,
+                cur_prc: item.cur_prc,
+                flu_rt: item.flu_rt,
+                mac: item.mac,
+              });
+            }
+          });
+
+          const finalData = Array.from(mergedDataMap.values());
+
+          // 4. 테이블 출력
+          renderTable(finalData);
+          updateTimestamp();
+        } catch (e) {
+          console.error("Error during updateData:", e);
+          document.getElementById("output").innerHTML =
+            `<div class="error">데이터 로딩 중 에러가 발생했습니다: ${e.message}</div>`;
+        }
+      }
+
+      // 데이터 업데이트 실행
+      updateData();
+    </script>
+  </body>
+</html>
